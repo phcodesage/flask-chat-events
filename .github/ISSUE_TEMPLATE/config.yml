@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / Discussion
+    url: https://github.com/phcodesage/flask-chat-events/discussions
+    about: Ask questions and discuss ideas here instead of opening an issue.

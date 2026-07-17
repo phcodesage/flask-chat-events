@@ -265,10 +265,11 @@ Released under the [MIT License](LICENSE).
 
 ## Contributing
 
-Contributions are welcome!
+Contributions are welcome! See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the
+full guide, and please review our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ```bash
-git clone https://github.com/example/flask-chat-events
+git clone https://github.com/phcodesage/flask-chat-events
 cd flask-chat-events
 pip install -e ".[dev]"
 pytest
@@ -276,7 +277,8 @@ black flask_chat_events tests examples
 ```
 
 Please keep the public API small, add type hints and docstrings, and cover new
-behavior with tests.
+behavior with tests. Report security issues privately per
+[SECURITY.md](SECURITY.md).
 
 ---
 
