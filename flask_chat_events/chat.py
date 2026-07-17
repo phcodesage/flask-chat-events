@@ -10,28 +10,43 @@ from __future__ import annotations
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from .constants import (
+    EVENT_DELETE,
+    EVENT_EDIT,
+    EVENT_HISTORY,
     EVENT_MESSAGE,
     EVENT_PRESENCE,
     EVENT_READ,
     EVENT_TYPING_START,
     EVENT_TYPING_STOP,
+    EVENT_USER_LIST,
     STATUS_ONLINE,
     VALID_STATUSES,
 )
 from .exceptions import (
     EmptyMessageError,
     InvalidStatusError,
+    MissingMessageIdError,
     MissingRoomError,
     MissingUserIdError,
     NotInitializedError,
 )
+from .registry import PresenceRegistry
+from .stores import MessageStore
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .handlers import InboundEvents
+
+# A hook that transforms a message payload dict before it is emitted/stored.
+MessageDecorator = Callable[[Dict[str, Any]], Dict[str, Any]]
 
 __all__ = [
     "ChatEvents",
     "ChatMessage",
+    "EditMessage",
+    "DeleteMessage",
     "TypingEvent",
     "ReadReceipt",
     "PresenceUpdate",
@@ -57,6 +72,15 @@ def _require_user_id(user_id: Any) -> str:
     return str(user_id)
 
 
+def _require_message_id(message_id: Any) -> str:
+    """Validate and normalize a ``message_id`` value."""
+    if message_id is None or (
+        isinstance(message_id, str) and not message_id.strip()
+    ):
+        raise MissingMessageIdError()
+    return str(message_id)
+
+
 @dataclass(frozen=True)
 class ChatMessage:
     """A single chat message payload."""
@@ -66,6 +90,26 @@ class ChatMessage:
     user_id: str
     text: str
     created_at: str
+
+
+@dataclass(frozen=True)
+class EditMessage:
+    """An edit to an existing chat message."""
+
+    id: str
+    room: str
+    user_id: str
+    text: str
+    edited_at: str
+
+
+@dataclass(frozen=True)
+class DeleteMessage:
+    """A deletion of an existing chat message."""
+
+    id: str
+    room: str
+    user_id: str
 
 
 @dataclass(frozen=True)
@@ -106,9 +150,26 @@ class ChatEvents:
         chat.init_app(socketio)
     """
 
-    def __init__(self, socketio: Optional[Any] = None) -> None:
-        """Create a ChatEvents instance, optionally bound to ``socketio``."""
+    def __init__(
+        self,
+        socketio: Optional[Any] = None,
+        *,
+        store: Optional[MessageStore] = None,
+        registry: Optional[PresenceRegistry] = None,
+        message_decorator: Optional[MessageDecorator] = None,
+    ) -> None:
+        """Create a ChatEvents instance, optionally bound to ``socketio``.
+
+        ``store`` enables automatic message-history persistence (see
+        :meth:`history`). ``registry`` enables presence/room tracking and
+        :meth:`broadcast_user_list`. ``message_decorator`` is applied to every
+        message payload before it is emitted and stored — use it to attach
+        derived fields such as an avatar color.
+        """
         self._socketio: Optional[Any] = None
+        self._store = store
+        self._registry = registry
+        self._message_decorator = message_decorator
         if socketio is not None:
             self.init_app(socketio)
 
@@ -122,6 +183,16 @@ class ChatEvents:
         if self._socketio is None:
             raise NotInitializedError()
         return self._socketio
+
+    @property
+    def store(self) -> Optional[MessageStore]:
+        """The bound message-history store, if any."""
+        return self._store
+
+    @property
+    def registry(self) -> Optional[PresenceRegistry]:
+        """The bound presence registry, if any."""
+        return self._registry
 
     def message(
         self,
@@ -143,14 +214,20 @@ class ChatEvents:
         if text is None or not str(text).strip():
             raise EmptyMessageError()
 
-        payload = ChatMessage(
+        message = ChatMessage(
             id=id or uuid.uuid4().hex,
             room=room,
             user_id=user_id,
             text=str(text),
             created_at=created_at or _utcnow_iso(),
         )
-        return self._emit(EVENT_MESSAGE, payload, room=room, **emit_kwargs)
+        data = asdict(message)
+        if self._message_decorator is not None:
+            data = self._message_decorator(data)
+        self.socketio.emit(EVENT_MESSAGE, data, **self._room_kwargs(room, emit_kwargs))
+        if self._store is not None:
+            self._store.add(room, data)
+        return data
 
     def typing_start(
         self, room: Any, user_id: Any, **emit_kwargs: Any
@@ -201,6 +278,132 @@ class ChatEvents:
         target_room = None if room is None else _require_room(room)
         return self._emit(EVENT_PRESENCE, payload, room=target_room, **emit_kwargs)
 
+    def edit(
+        self,
+        room: Any,
+        message_id: Any,
+        user_id: Any,
+        text: str,
+        *,
+        edited_at: Optional[str] = None,
+        **emit_kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Emit a ``chat:edit`` event and return the emitted payload.
+
+        When a store is bound, the stored message's ``text`` is updated too.
+        ``edited_at`` defaults to the current UTC time in ISO-8601 format.
+        """
+        room = _require_room(room)
+        user_id = _require_user_id(user_id)
+        message_id = _require_message_id(message_id)
+        if text is None or not str(text).strip():
+            raise EmptyMessageError()
+
+        payload = EditMessage(
+            id=message_id,
+            room=room,
+            user_id=user_id,
+            text=str(text),
+            edited_at=edited_at or _utcnow_iso(),
+        )
+        data = self._emit(EVENT_EDIT, payload, room=room, **emit_kwargs)
+        if self._store is not None:
+            self._store.edit(room, message_id, data["text"], edited_at=data["edited_at"])
+        return data
+
+    def delete(
+        self, room: Any, message_id: Any, user_id: Any, **emit_kwargs: Any
+    ) -> Dict[str, Any]:
+        """Emit a ``chat:delete`` event and return the emitted payload.
+
+        When a store is bound, the stored message is removed too.
+        """
+        payload = DeleteMessage(
+            id=_require_message_id(message_id),
+            room=_require_room(room),
+            user_id=_require_user_id(user_id),
+        )
+        data = self._emit(EVENT_DELETE, payload, room=payload.room, **emit_kwargs)
+        if self._store is not None:
+            self._store.delete(payload.room, payload.id)
+        return data
+
+    def history(self, room: Any, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Return stored message history for ``room`` (oldest first).
+
+        Requires a bound :class:`~flask_chat_events.stores.MessageStore`.
+        """
+        if self._store is None:
+            raise NotInitializedError(
+                "No message store is bound. Pass store=... to ChatEvents to "
+                "enable history."
+            )
+        return self._store.history(_require_room(room), limit)
+
+    def send_history(
+        self, room: Any, *, limit: Optional[int] = None, **emit_kwargs: Any
+    ) -> Dict[str, Any]:
+        """Emit a ``chat:history`` event with a room's stored messages.
+
+        Handy inside a ``join`` handler to prime a newly joined client. By
+        default it is sent only to the requesting client (Socket.IO's implicit
+        recipient); pass ``to=``/``room=`` to target others.
+        """
+        room = _require_room(room)
+        data = {"room": room, "messages": self.history(room, limit)}
+        self.socketio.emit(EVENT_HISTORY, data, **emit_kwargs)
+        return data
+
+    def broadcast_user_list(
+        self, room: Optional[Any] = None, **emit_kwargs: Any
+    ) -> Dict[str, Any]:
+        """Emit a ``presence:list`` event with the current online users.
+
+        With ``room`` set, lists users in that room and targets it; otherwise
+        lists all online users and broadcasts. Requires a bound
+        :class:`~flask_chat_events.registry.PresenceRegistry`.
+        """
+        if self._registry is None:
+            raise NotInitializedError(
+                "No presence registry is bound. Pass registry=... to ChatEvents "
+                "to enable user-list broadcasts."
+            )
+        if room is None:
+            # No room/to -> Flask-SocketIO broadcasts to every connected client.
+            users = self._registry.online_users()
+            data = {"room": None, "users": users}
+        else:
+            room = _require_room(room)
+            users = self._registry.users_in(room)
+            data = {"room": room, "users": users}
+            emit_kwargs = self._room_kwargs(room, emit_kwargs)
+        self.socketio.emit(EVENT_USER_LIST, data, **emit_kwargs)
+        return data
+
+    def register_handlers(
+        self,
+        authenticate: Callable[[], Optional[str]],
+        *,
+        events: "Optional[InboundEvents]" = None,
+        default_room: str = "general",
+        send_history_on_join: bool = True,
+        user_meta: Optional[Callable[[str], Dict[str, Any]]] = None,
+    ) -> None:
+        """Install a full set of inbound Socket.IO handlers on the bound server.
+
+        See :func:`flask_chat_events.handlers.register_handlers` for details.
+        """
+        from .handlers import register_handlers as _register
+
+        _register(
+            self,
+            authenticate,
+            events=events,
+            default_room=default_room,
+            send_history_on_join=send_history_on_join,
+            user_meta=user_meta,
+        )
+
     def _emit(
         self,
         event: str,
@@ -211,7 +414,14 @@ class ChatEvents:
     ) -> Dict[str, Any]:
         """Serialize ``payload`` and forward it to ``socketio.emit()``."""
         data = asdict(payload)
+        self.socketio.emit(event, data, **self._room_kwargs(room, emit_kwargs))
+        return data
+
+    @staticmethod
+    def _room_kwargs(
+        room: Optional[str], emit_kwargs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Default the ``room`` emit kwarg without clobbering an explicit one."""
         if room is not None:
             emit_kwargs.setdefault("room", room)
-        self.socketio.emit(event, data, **emit_kwargs)
-        return data
+        return emit_kwargs

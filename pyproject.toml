@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flask-chat-events"
-version = "0.1.0"
+version = "0.2.0"
 description = "Standardized Socket.IO chat events on top of Flask-SocketIO."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -31,9 +31,9 @@ test = ["pytest>=7.4"]
 dev = ["pytest>=7.4", "black>=24.1"]
 
 [project.urls]
-Homepage = "https://github.com/example/flask-chat-events"
-Source = "https://github.com/example/flask-chat-events"
-Issues = "https://github.com/example/flask-chat-events/issues"
+Homepage = "https://github.com/phcodesage/flask-chat-events"
+Source = "https://github.com/phcodesage/flask-chat-events"
+Issues = "https://github.com/phcodesage/flask-chat-events/issues"
 
 [tool.setuptools.packages.find]
 include = ["flask_chat_events*"]

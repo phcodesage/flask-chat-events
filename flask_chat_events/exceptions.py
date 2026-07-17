@@ -38,6 +38,13 @@ class InvalidStatusError(ChatEventError):
         )
 
 
+class MissingMessageIdError(ChatEventError):
+    """Raised when a required ``message_id`` argument is missing or empty."""
+
+    def __init__(self, message: str = "A non-empty 'message_id' is required.") -> None:
+        super().__init__(message)
+
+
 class NotInitializedError(ChatEventError):
     """Raised when ChatEvents is used before being bound to a SocketIO instance."""
 
