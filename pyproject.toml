@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flask-chat-events"
-version = "0.2.0"
+version = "0.2.1"
 description = "Standardized Socket.IO chat events on top of Flask-SocketIO."
 readme = "README.md"
 requires-python = ">=3.11"
